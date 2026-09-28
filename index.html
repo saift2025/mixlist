@@ -45,7 +45,7 @@
   button.big { width: 100%; margin: 10px 0 0; font-size: 1.15rem; }
   button.danger, .ghost.danger { color: #fca5a5; }
   button.yes { background: #b91c1c; color: #fff; }
-  #vid, #ytwrap, #ytwrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #vid, #ytwrap, #ytwrap iframe, #embedwrap, #embedwrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
   #idle { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 16px; }
   .controls { display: flex; gap: 8px; margin: 10px 0; }
   .controls button { flex: 1; }
@@ -84,6 +84,7 @@
     <div id="stage">
       <video id="vid" controls controlsList="nofullscreen" playsinline hidden></video>
       <div id="ytwrap" hidden><div id="yt"></div></div>
+      <div id="embedwrap" hidden><iframe id="embed" title="Video" allowfullscreen scrolling="no" style="border:0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write"></iframe></div>
       <div id="idle">Add videos below, then tap one to play</div>
     </div>
     <button id="full" class="big">⛶ Full screen (turns sideways)</button>
@@ -94,7 +95,7 @@
       <button id="castHelp" class="icon">📺 Cast</button>
     </div>
     <div class="add">
-      <textarea id="links" placeholder="Paste YouTube links, one per line.&#10;Add your own title after a link if you like:&#10;https://youtu.be/xxxxxxxxxxx My own title"></textarea>
+      <textarea id="links" placeholder="Paste YouTube, Facebook or Instagram links, one per line.&#10;Add your own title after a link if you like:&#10;https://youtu.be/xxxxxxxxxxx My own title"></textarea>
       <div class="two">
         <button id="addLinks">Add links</button>
         <button id="addFiles">Add from phone</button>
@@ -220,6 +221,7 @@ async function loadItems() {
   items = (await getAll('items')).filter(i => i.playlistId === pl.id).sort((a, b) => a.position - b.position);
   renderItems();
 }
+const extUrl = it => it.type === 'YT' ? 'https://www.youtube.com/watch?v=' + it.ref : (it.type === 'FB' || it.type === 'IG') ? it.ref : null;
 function renderItems() {
   const ul = $('#items'); ul.replaceChildren();
   if (!items.length) ul.append(h('li', { class: 'empty' }, 'This playlist is empty.'));
@@ -227,16 +229,16 @@ function renderItems() {
   items.forEach((it, i) => {
     const thumb = it.type === 'YT'
       ? h('img', { class: 'thumb', src: 'https://i.ytimg.com/vi/' + it.ref + '/mqdefault.jpg', alt: '', loading: 'lazy' })
-      : h('div', { class: 'thumb' }, '🎞');
+      : h('div', { class: 'thumb' }, { LOCAL: '🎞', FB: '📘', IG: '📷' }[it.type] || '🎞');
     const acts = editing ? h('div', { class: 'acts' },
       h('button', { class: 'ghost', onclick: stop(() => move(i, -1)) }, '▲ Up'),
       h('button', { class: 'ghost', onclick: stop(() => move(i, 1)) }, '▼ Down'),
       h('button', { class: 'ghost', onclick: stop(() => renameItem(it)) }, '✎ Rename'),
-      it.type === 'YT' ? h('a', { class: 'lnk', href: 'https://www.youtube.com/watch?v=' + it.ref, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation() }, '↗ YouTube') : null,
+      extUrl(it) ? h('a', { class: 'lnk', href: extUrl(it), target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation() }, '↗ ' + { YT: 'YouTube', FB: 'Facebook', IG: 'Instagram' }[it.type]) : null,
       h('button', { class: 'ghost danger', onclick: stop(() => removeItem(it)) }, '🗑 Remove')) : null;
     ul.append(h('li', { class: 'row' + (it.id === curId ? ' now' : ''), onclick: () => play(i) },
       thumb,
-      h('div', { class: 'grow' }, h('div', { class: 'name' }, it.title), h('div', { class: 'sub' }, it.type === 'YT' ? 'YouTube' : 'On this phone'), acts)));
+      h('div', { class: 'grow' }, h('div', { class: 'name' }, it.title), h('div', { class: 'sub' }, { YT: 'YouTube', FB: 'Facebook', IG: 'Instagram', LOCAL: 'On this phone' }[it.type]), acts)));
   });
 }
 async function addItem(o) {
@@ -304,18 +306,30 @@ async function ytTitle(id) {
   return null;
 }
 const isYt = t => /^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/i.test(t);
+const isIg = t => /^(?:https?:\/\/)?(?:www\.)?instagram\.com\//i.test(t);
+const isFb = t => /^(?:https?:\/\/)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch|fb\.com)\//i.test(t);
+function kindOf(t) {
+  if (isIg(t)) {
+    const m = t.match(/instagram\.com\/(?:[\w.]+\/)?(p|reel|reels|tv)\/([\w-]+)/i);
+    if (!m) return { bad: true };
+    const k = m[1].toLowerCase();
+    return { type: 'IG', ref: 'https://www.instagram.com/' + (k === 'p' ? 'p' : k === 'tv' ? 'tv' : 'reel') + '/' + m[2] + '/' };
+  }
+  if (isFb(t)) return { type: 'FB', ref: /^https?:/i.test(t) ? t : 'https://' + t };
+  if (isYt(t)) { const id = ytId(t); return id ? { type: 'YT', ref: id } : { bad: true }; }
+  return null;
+}
 function parseLinks(text) {
   const out = []; let bad = 0;
   for (const line of text.split('\n')) {
     const toks = line.trim().split(/\s+/).filter(Boolean);
     if (!toks.length) continue;
-    if (toks.length === 1 && /^[\w-]{11}$/.test(toks[0])) { out.push({ id: toks[0], title: '' }); continue; }
+    if (toks.length === 1 && /^[\w-]{11}$/.test(toks[0])) { out.push({ type: 'YT', ref: toks[0], title: '' }); continue; }
     let cur = null, any = false;
     for (const t of toks) {
-      if (isYt(t)) {
-        any = true; const id = ytId(t);
-        if (id) { cur = { id, title: '' }; out.push(cur); } else { bad++; cur = null; }
-      } else if (cur) cur.title += (cur.title ? ' ' : '') + t;
+      const k = kindOf(t);
+      if (k) { any = true; if (k.bad) { bad++; cur = null; } else { cur = { ...k, title: '' }; out.push(cur); } }
+      else if (cur) cur.title += (cur.title ? ' ' : '') + t;
     }
     if (!any) bad++;
   }
@@ -325,12 +339,19 @@ function parseLinks(text) {
 $('#addLinks').onclick = async () => {
   const { out, bad } = parseLinks($('#links').value);
   if (!out.length && !bad) return;
+  let untitled = 0;
   for (const o of out) {
-    const t = o.title || await ytTitle(o.id);
-    await addItem({ type: 'YT', ref: o.id, title: t || 'YouTube video ' + o.id, autoTitle: !t });
+    if (o.type === 'YT') {
+      const t = o.title || await ytTitle(o.ref);
+      await addItem({ type: 'YT', ref: o.ref, title: t || 'YouTube video ' + o.ref, autoTitle: !t });
+    } else {
+      if (!o.title) untitled++;
+      await addItem({ type: o.type, ref: o.ref, title: o.title || (o.type === 'FB' ? 'Facebook video' : 'Instagram video') });
+    }
   }
   $('#links').value = '';
-  toast(out.length + ' added' + (bad ? ', ' + bad + ' not recognised (single video links only)' : ''));
+  toast(out.length + ' added' + (bad ? ', ' + bad + ' not recognised' : '') +
+    (untitled ? '. Tap Edit > Rename to give your own title' : ''));
 };
 $('#addFiles').onclick = () => $('#fileInput').click();
 $('#fileInput').onchange = async e => {
@@ -404,16 +425,20 @@ document.addEventListener('fullscreenchange', () => {
 });
 $('#castHelp').onclick = () => $('#castDlg').showModal();
 $('#castClose').onclick = () => $('#castDlg').close();
-function show(which) { vid.hidden = which !== 'vid'; $('#ytwrap').hidden = which !== 'yt'; $('#idle').hidden = !!which; }
+function show(which) { vid.hidden = which !== 'vid'; $('#ytwrap').hidden = which !== 'yt'; $('#embedwrap').hidden = which !== 'embed'; $('#idle').hidden = !!which; }
 function stopAll() {
   vid.pause(); vid.removeAttribute('src'); vid.load();
   if (objUrl) { URL.revokeObjectURL(objUrl); objUrl = null; }
   if (ytReady) yt.stopVideo();
-  ytPending = null; show(null); keepAwake(false);
+  ytPending = null; $('#embed').src = 'about:blank'; show(null); keepAwake(false);
 }
+let embedTipShown = false;
+const embedSrc = it => it.type === 'IG'
+  ? it.ref + 'embed'
+  : 'https://www.facebook.com/plugins/video.php?show_text=false&autoplay=true&href=' + encodeURIComponent(it.ref);
 async function play(i) {
   const it = items[i]; if (!it) return;
-  curId = it.id; renderItems(); keepAwake(true);
+  curId = it.id; renderItems(); keepAwake(true); $('#embed').src = 'about:blank';
   if (it.type === 'LOCAL') {
     if (ytReady) yt.stopVideo();
     const f = await getOne('files', it.fileId);
@@ -421,6 +446,10 @@ async function play(i) {
     if (objUrl) URL.revokeObjectURL(objUrl);
     objUrl = URL.createObjectURL(f.blob);
     show('vid'); vid.src = objUrl; vid.play().catch(() => {});
+  } else if (it.type === 'FB' || it.type === 'IG') {
+    vid.pause(); if (ytReady) yt.stopVideo();
+    show('embed'); $('#embed').src = embedSrc(it);
+    if (!embedTipShown) { embedTipShown = true; toast('Facebook and Instagram videos do not move on by themselves. Tap ⏭ when one ends.'); }
   } else {
     vid.pause(); show('yt');
     if (!yt) loadYT();
