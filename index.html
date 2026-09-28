@@ -42,6 +42,10 @@
     #stage { position: static; margin: 0 auto; border-radius: 8px;
       width: min(100%, calc((100vh - 24px) * 16 / 9)); }
   }
+  .backup { margin-top: 28px; padding-top: 16px; border-top: 1px solid #334155; }
+  .backup h2 { font-size: 1.1rem; margin: 0 0 4px; }
+  .backup .two { display: flex; gap: 8px; margin-top: 10px; }
+  .backup .two button { flex: 1; }
   button.big { width: 100%; margin: 10px 0 0; font-size: 1.15rem; }
   a.big { display: block; margin: 10px 0 0; padding: 14px 18px; border-radius: 12px; background: var(--card);
     color: var(--text); text-align: center; text-decoration: none; font-weight: 600; }
@@ -80,6 +84,15 @@
       <button type="submit">Create</button>
     </form>
     <ul id="lists"></ul>
+    <div class="backup">
+      <h2>Keep your playlists safe</h2>
+      <div id="lastBackup" class="sub"></div>
+      <div class="two">
+        <button id="saveBackup">💾 Save backup</button>
+        <button id="restoreBackup" class="icon">📥 Restore backup</button>
+      </div>
+      <input id="restoreInput" type="file" hidden>
+    </div>
   </section>
 
   <section id="detail" hidden>
@@ -186,6 +199,7 @@ async function showHome() {
   return renderHome();
 }
 async function renderHome() {
+  showBackupDate();
   const [lists, all] = await Promise.all([getAll('playlists'), getAll('items')]);
   const ul = $('#lists'); ul.replaceChildren();
   if (!lists.length) ul.append(h('li', { class: 'empty' }, 'No playlists yet. Create one above.'));
@@ -276,10 +290,11 @@ async function renameList(p) {
   if (!t) return;
   p.name = t; await put('playlists', p); showHome();
 }
-function askConfirm(msg, yes = 'Yes, delete') {
+function askConfirm(msg, yes = 'Yes, delete', no = 'No, keep it', danger = true) {
   return new Promise(res => {
     const d = $('#cfmDlg');
-    $('#cfmMsg').textContent = msg; $('#cfmYes').textContent = yes; d.returnValue = '';
+    $('#cfmMsg').textContent = msg; $('#cfmYes').textContent = yes; $('#cfmNo').textContent = no;
+    $('#cfmYes').classList.toggle('yes', danger); d.returnValue = '';
     d.onclose = () => res(d.returnValue === 'yes');
     $('#cfmNo').onclick = () => d.close('no');
     $('#cfmYes').onclick = () => d.close('yes');
@@ -478,7 +493,82 @@ if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('previoustrack', prev);
 }
 
+/* ---------- backup / restore ---------- */
+function showBackupDate() {
+  let d = null;
+  try { d = localStorage.getItem('mixlist_backup'); } catch (e) {}
+  $('#lastBackup').textContent = d
+    ? 'Last backup: ' + new Date(d).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+    : 'No backup yet. Please save one.';
+}
+function markBackup() {
+  try { localStorage.setItem('mixlist_backup', new Date().toISOString()); } catch (e) {}
+  showBackupDate();
+}
+function downloadFile(file) {
+  const u = URL.createObjectURL(file);
+  const a = h('a', { href: u, download: file.name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 10000);
+  toast('Backup saved in your Downloads folder');
+}
+async function buildBackup() {
+  const [lists, all] = await Promise.all([getAll('playlists'), getAll('items')]);
+  return {
+    app: 'MixList', version: 1, saved: new Date().toISOString(),
+    playlists: lists.map(p => ({
+      name: p.name,
+      items: all.filter(i => i.playlistId === p.id).sort((a, b) => a.position - b.position)
+        .map(i => i.type === 'LOCAL' ? { type: 'LOCAL', title: i.title } : { type: i.type, ref: i.ref, title: i.title })
+    }))
+  };
+}
+$('#saveBackup').onclick = async () => {
+  const text = JSON.stringify(await buildBackup(), null, 1);
+  const day = new Date().toISOString().slice(0, 10);
+  const asJson = new File([text], 'MixList-backup-' + day + '.json', { type: 'application/json' });
+  const asText = new File([text], 'MixList-backup-' + day + '.txt', { type: 'text/plain' });
+  try {
+    const canShare = f => navigator.canShare && navigator.canShare({ files: [f] });
+    if (canShare(asJson)) await navigator.share({ files: [asJson], title: 'MixList backup' });
+    else if (canShare(asText)) await navigator.share({ files: [asText], title: 'MixList backup' });
+    else downloadFile(asJson);
+    markBackup();
+  } catch (e) {
+    if (e.name === 'AbortError') return;   // person closed the share sheet
+    downloadFile(asJson); markBackup();
+  }
+};
+const okRef = it =>
+  (it.type === 'YT' && /^[\w-]{11}$/.test(it.ref)) ||
+  (it.type === 'IG' && /^https:\/\/www\.instagram\.com\/(?:p|reel|tv)\/[\w-]+\/$/.test(it.ref)) ||
+  (it.type === 'FB' && /^https:\/\/(?:www\.)?(?:facebook\.com|fb\.watch|fb\.com)\//i.test(it.ref));
+$('#restoreBackup').onclick = () => $('#restoreInput').click();
+$('#restoreInput').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  let data;
+  try {
+    data = JSON.parse(await f.text());
+    if (data.app !== 'MixList' || !Array.isArray(data.playlists)) throw new Error('bad');
+  } catch (err) { toast('That file is not a MixList backup'); return; }
+  const all = data.playlists.flatMap(p => p.items || []);
+  const online = all.filter(okRef).length, local = all.filter(i => i.type === 'LOCAL').length, n = data.playlists.length;
+  let msg = 'Add ' + n + ' playlist' + (n === 1 ? '' : 's') + ' with ' + online + ' online video' + (online === 1 ? '' : 's') + ' from this backup?';
+  if (local) msg += '\n\n' + local + ' video' + (local === 1 ? '' : 's') + ' that were saved on the old phone cannot be included. Add ' + (local === 1 ? 'it' : 'them') + ' again with "Add from phone".';
+  if (!await askConfirm(msg, 'Yes, add them', 'No, cancel', false)) return;
+  for (const p of data.playlists) {
+    const pid = await put('playlists', { name: String(p.name || 'Playlist').slice(0, 60) });
+    let pos = 0;
+    for (const it of p.items || []) {
+      if (!okRef(it)) continue;
+      await put('items', { playlistId: pid, position: pos++, type: it.type, ref: it.ref, title: String(it.title || '').slice(0, 120), autoTitle: false });
+    }
+  }
+  toast('Backup restored'); renderHome();
+};
+
 /* ---------- start ---------- */
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 showHome();
 </script>
