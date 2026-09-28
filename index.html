@@ -43,6 +43,8 @@
       width: min(100%, calc((100vh - 24px) * 16 / 9)); }
   }
   button.big { width: 100%; margin: 10px 0 0; font-size: 1.15rem; }
+  a.big { display: block; margin: 10px 0 0; padding: 14px 18px; border-radius: 12px; background: var(--card);
+    color: var(--text); text-align: center; text-decoration: none; font-weight: 600; }
   button.danger, .ghost.danger { color: #fca5a5; }
   button.yes { background: #b91c1c; color: #fff; }
   #vid, #ytwrap, #ytwrap iframe, #embedwrap, #embedwrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -87,7 +89,8 @@
       <div id="embedwrap" hidden><iframe id="embed" title="Video" allowfullscreen scrolling="no" style="border:0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write"></iframe></div>
       <div id="idle">Add videos below, then tap one to play</div>
     </div>
-    <button id="full" class="big">⛶ Full screen (turns sideways)</button>
+    <button id="full" class="big">⛶ Full screen</button>
+    <a id="openOrig" class="big" target="_blank" rel="noopener" hidden></a>
     <div class="controls">
       <button id="prev" class="icon" aria-label="Previous">⏮</button>
       <button id="next" class="icon" aria-label="Next">⏭</button>
@@ -315,7 +318,7 @@ function kindOf(t) {
     const k = m[1].toLowerCase();
     return { type: 'IG', ref: 'https://www.instagram.com/' + (k === 'p' ? 'p' : k === 'tv' ? 'tv' : 'reel') + '/' + m[2] + '/' };
   }
-  if (isFb(t)) return { type: 'FB', ref: /^https?:/i.test(t) ? t : 'https://' + t };
+  if (isFb(t)) return { type: 'FB', ref: (/^https?:/i.test(t) ? t : 'https://' + t).replace(/^(https?:\/\/)(?:m|web|mbasic)\.facebook\.com/i, '$1www.facebook.com') };
   if (isYt(t)) { const id = ytId(t); return id ? { type: 'YT', ref: id } : { bad: true }; }
   return null;
 }
@@ -416,11 +419,11 @@ $('#full').onclick = async () => {
   if (curId == null && items.length) play(0);
   try { await $('#stage').requestFullscreen({ navigationUI: 'hide' }); }
   catch (e) { toast('Full screen is not available on this phone'); return; }
-  try { await screen.orientation.lock('landscape'); } catch (e) { /* rotate the phone by hand */ }
+  lockOrientation();
 };
 document.addEventListener('fullscreenchange', () => {
   const on = !!document.fullscreenElement;
-  $('#full').textContent = on ? '✕ Exit full screen' : '⛶ Full screen (turns sideways)';
+  $('#full').textContent = on ? '✕ Exit full screen' : '⛶ Full screen';
   if (!on) { try { screen.orientation.unlock(); } catch (e) {} }
 });
 $('#castHelp').onclick = () => $('#castDlg').showModal();
@@ -430,15 +433,20 @@ function stopAll() {
   vid.pause(); vid.removeAttribute('src'); vid.load();
   if (objUrl) { URL.revokeObjectURL(objUrl); objUrl = null; }
   if (ytReady) yt.stopVideo();
-  ytPending = null; $('#embed').src = 'about:blank'; show(null); keepAwake(false);
+  ytPending = null; $('#embed').src = 'about:blank'; $('#openOrig').hidden = true; show(null); keepAwake(false);
 }
 let embedTipShown = false;
+const isReel = it => (it.type === 'IG' && /\/reel\//.test(it.ref)) || (it.type === 'FB' && /\/reel\/|\/share\/r\//.test(it.ref));
+function lockOrientation() {
+  const it = items.find(i => i.id === curId);
+  try { screen.orientation.lock(it && isReel(it) ? 'portrait' : 'landscape').catch(() => {}); } catch (e) { /* rotate by hand */ }
+}
 const embedSrc = it => it.type === 'IG'
   ? it.ref + 'embed'
   : 'https://www.facebook.com/plugins/video.php?show_text=false&autoplay=true&href=' + encodeURIComponent(it.ref);
 async function play(i) {
   const it = items[i]; if (!it) return;
-  curId = it.id; renderItems(); keepAwake(true); $('#embed').src = 'about:blank';
+  curId = it.id; renderItems(); keepAwake(true); $('#embed').src = 'about:blank'; $('#openOrig').hidden = true;
   if (it.type === 'LOCAL') {
     if (ytReady) yt.stopVideo();
     const f = await getOne('files', it.fileId);
@@ -449,6 +457,7 @@ async function play(i) {
   } else if (it.type === 'FB' || it.type === 'IG') {
     vid.pause(); if (ytReady) yt.stopVideo();
     show('embed'); $('#embed').src = embedSrc(it);
+    const o = $('#openOrig'); o.href = it.ref; o.textContent = '↗ Not playing? Open in ' + (it.type === 'FB' ? 'Facebook' : 'Instagram'); o.hidden = false;
     if (!embedTipShown) { embedTipShown = true; toast('Facebook and Instagram videos do not move on by themselves. Tap ⏭ when one ends.'); }
   } else {
     vid.pause(); show('yt');
@@ -456,6 +465,7 @@ async function play(i) {
     if (ytReady) yt.loadVideoById(it.ref); else { ytPending = it.ref; if (!navigator.onLine) toast('You are offline'); }
   }
   setMeta(it);
+  if (document.fullscreenElement) lockOrientation();
 }
 const idx = () => items.findIndex(i => i.id === curId);
 function next() { const i = idx(); if (i + 1 < items.length) play(i + 1); else if (repeat && items.length) play(0); else keepAwake(false); }
