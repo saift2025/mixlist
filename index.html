@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>MixList</title>
+<style>
+  :root { --bg:#0f172a; --card:#1e293b; --text:#f1f5f9; --muted:#94a3b8; --accent:#fbbf24; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { max-width: 720px; margin: 0 auto; padding: env(safe-area-inset-top) 12px calc(env(safe-area-inset-bottom) + 24px); }
+  header { display: flex; align-items: center; gap: 8px; padding: 14px 0 10px; }
+  header h1 { font-size: 1.25rem; margin: 0; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 10px 14px; background: var(--accent); color: #111; font-weight: 600; }
+  button.ghost { background: transparent; color: var(--muted); padding: 8px 10px; }
+  button.icon { background: var(--card); color: var(--text); padding: 10px 14px; }
+  button.on { background: var(--accent); color: #111; }
+  input[type=text], textarea { width: 100%; font: inherit; color: var(--text); background: var(--card);
+    border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; }
+  textarea { min-height: 64px; resize: vertical; }
+  form { display: flex; gap: 8px; margin-bottom: 12px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .row { display: flex; align-items: center; gap: 10px; background: var(--card); border-radius: 12px;
+    padding: 10px 12px; margin-bottom: 8px; cursor: pointer; }
+  .row.now { outline: 2px solid var(--accent); }
+  .grow { flex: 1; min-width: 0; }
+  .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { color: var(--muted); font-size: .85rem; }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+  .thumb { width: 64px; height: 36px; border-radius: 6px; background: #0b1220; object-fit: cover; flex: none;
+    display: grid; place-items: center; font-size: 1.2rem; }
+  #stage { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; }
+  #vid, #ytwrap, #ytwrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #idle { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 16px; }
+  .controls { display: flex; gap: 8px; margin: 10px 0; }
+  .controls button { flex: 1; }
+  .add { display: grid; gap: 8px; margin-bottom: 14px; }
+  .add .two { display: flex; gap: 8px; }
+  .add .two button { flex: 1; }
+  #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 20px); transform: translateX(-50%);
+    background: #e2e8f0; color: #0f172a; padding: 10px 16px; border-radius: 999px; font-size: .9rem; max-width: 90%; z-index: 9; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button id="back" class="icon" hidden aria-label="Back">‹</button>
+    <h1 id="title">MixList</h1>
+  </header>
+
+  <section id="home">
+    <form id="newForm">
+      <input id="newName" type="text" placeholder="New playlist name" maxlength="60">
+      <button type="submit">Create</button>
+    </form>
+    <ul id="lists"></ul>
+  </section>
+
+  <section id="detail" hidden>
+    <div id="stage">
+      <video id="vid" controls playsinline hidden></video>
+      <div id="ytwrap" hidden><div id="yt"></div></div>
+      <div id="idle">Add videos below, then tap one to play</div>
+    </div>
+    <div class="controls">
+      <button id="prev" class="icon" aria-label="Previous">⏮</button>
+      <button id="next" class="icon" aria-label="Next">⏭</button>
+      <button id="repeat" class="icon">Repeat: off</button>
+    </div>
+    <div class="add">
+      <textarea id="links" placeholder="Paste YouTube links (one or many)"></textarea>
+      <div class="two">
+        <button id="addLinks">Add links</button>
+        <button id="addFiles">Add from phone</button>
+      </div>
+      <input id="fileInput" type="file" accept="video/*" multiple hidden>
+    </div>
+    <ul id="items"></ul>
+  </section>
+</div>
+<div id="toast" hidden></div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const h = (tag, props = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e[k] = v;
+    else e.setAttribute(k, v);
+  }
+  kids.flat().filter(Boolean).forEach(c => e.append(c));
+  return e;
+};
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 3000);
+}
+
+/* ---------- storage (IndexedDB) ---------- */
+let db;
+const openDb = () => new Promise((res, rej) => {
+  const r = indexedDB.open('mixlist', 1);
+  r.onupgradeneeded = () => {
+    const d = r.result;
+    d.createObjectStore('playlists', { keyPath: 'id', autoIncrement: true });
+    d.createObjectStore('items', { keyPath: 'id', autoIncrement: true });
+    d.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
+  };
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+async function store(name, mode = 'readonly') { db = db || await openDb(); return db.transaction(name, mode).objectStore(name); }
+const getAll = async n => req((await store(n)).getAll());
+const getOne = async (n, k) => req((await store(n)).get(k));
+const put = async (n, v) => req((await store(n, 'readwrite')).put(v));
+const del = async (n, k) => req((await store(n, 'readwrite')).delete(k));
+
+/* ---------- state ---------- */
+let pl = null, items = [], curId = null, repeat = false, objUrl = null;
+const vid = $('#vid');
+
+/* ---------- home ---------- */
+async function showHome() {
+  stopAll(); pl = null; items = []; curId = null;
+  $('#home').hidden = false; $('#detail').hidden = true; $('#back').hidden = true;
+  $('#title').textContent = 'MixList';
+  const [lists, all] = await Promise.all([getAll('playlists'), getAll('items')]);
+  const ul = $('#lists'); ul.replaceChildren();
+  if (!lists.length) ul.append(h('li', { class: 'empty' }, 'No playlists yet. Create one above.'));
+  for (const p of lists) {
+    const n = all.filter(i => i.playlistId === p.id).length;
+    ul.append(h('li', { class: 'row', onclick: () => { history.pushState({}, ''); openList(p); } },
+      h('div', { class: 'grow' }, h('div', { class: 'name' }, p.name), h('div', { class: 'sub' }, n + (n === 1 ? ' item' : ' items'))),
+      h('button', { class: 'ghost', onclick: e => { e.stopPropagation(); removeList(p); } }, 'Delete')));
+  }
+}
+async function removeList(p) {
+  if (!confirm('Delete "' + p.name + '" and its saved videos?')) return;
+  const its = (await getAll('items')).filter(i => i.playlistId === p.id);
+  for (const i of its) { if (i.fileId != null) await del('files', i.fileId); await del('items', i.id); }
+  await del('playlists', p.id);
+  showHome();
+}
+$('#newForm').onsubmit = async e => {
+  e.preventDefault();
+  const n = $('#newName').value.trim(); if (!n) return;
+  await put('playlists', { name: n }); $('#newName').value = ''; showHome();
+};
+
+/* ---------- playlist screen ---------- */
+async function openList(p) {
+  pl = p; $('#home').hidden = true; $('#detail').hidden = false; $('#back').hidden = false;
+  $('#title').textContent = p.name;
+  await loadItems(); loadYT();
+}
+$('#back').onclick = () => history.back();
+window.onpopstate = () => showHome();
+
+async function loadItems() {
+  items = (await getAll('items')).filter(i => i.playlistId === pl.id).sort((a, b) => a.position - b.position);
+  renderItems();
+}
+function renderItems() {
+  const ul = $('#items'); ul.replaceChildren();
+  if (!items.length) ul.append(h('li', { class: 'empty' }, 'This playlist is empty.'));
+  items.forEach((it, i) => {
+    const thumb = it.type === 'YT'
+      ? h('img', { class: 'thumb', src: 'https://i.ytimg.com/vi/' + it.ref + '/mqdefault.jpg', alt: '', loading: 'lazy' })
+      : h('div', { class: 'thumb' }, '🎞');
+    ul.append(h('li', { class: 'row' + (it.id === curId ? ' now' : ''), onclick: () => play(i) },
+      thumb,
+      h('div', { class: 'grow' }, h('div', { class: 'name' }, it.title), h('div', { class: 'sub' }, it.type === 'YT' ? 'YouTube' : 'On this phone')),
+      h('button', { class: 'ghost', 'aria-label': 'Move up', onclick: e => { e.stopPropagation(); move(i, -1); } }, '▲'),
+      h('button', { class: 'ghost', 'aria-label': 'Move down', onclick: e => { e.stopPropagation(); move(i, 1); } }, '▼'),
+      h('button', { class: 'ghost', 'aria-label': 'Remove', onclick: e => { e.stopPropagation(); removeItem(it); } }, '✕')));
+  });
+}
+async function addItem(o) {
+  const pos = items.length ? Math.max(...items.map(i => i.position)) + 1 : 0;
+  await put('items', { playlistId: pl.id, position: pos, ...o });
+  await loadItems();
+}
+async function move(i, d) {
+  const j = i + d; if (j < 0 || j >= items.length) return;
+  const a = items[i], b = items[j];
+  [a.position, b.position] = [b.position, a.position];
+  await put('items', a); await put('items', b); await loadItems();
+}
+async function removeItem(it) {
+  if (it.id === curId) { stopAll(); curId = null; }
+  if (it.fileId != null) await del('files', it.fileId);
+  await del('items', it.id); await loadItems();
+}
+
+/* ---------- adding videos ---------- */
+const ytId = s => (s.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([\w-]{11})/) || s.match(/^([\w-]{11})$/) || [])[1];
+async function ytTitle(id) {
+  try {
+    const r = await fetch('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + id));
+    if (r.ok) return (await r.json()).title;
+  } catch (e) { /* offline or blocked: fall back below */ }
+  return null;
+}
+$('#addLinks').onclick = async () => {
+  const parts = $('#links').value.split(/\s+/).filter(Boolean);
+  if (!parts.length) return;
+  let added = 0, bad = 0;
+  for (const p of parts) {
+    const id = ytId(p);
+    if (!id) { bad++; continue; }
+    const t = await ytTitle(id);
+    await addItem({ type: 'YT', ref: id, title: t || 'YouTube video ' + id, autoTitle: !t });
+    added++;
+  }
+  $('#links').value = '';
+  toast(added + ' added' + (bad ? ', ' + bad + ' not recognised (single video links only)' : ''));
+};
+$('#addFiles').onclick = () => $('#fileInput').click();
+$('#fileInput').onchange = async e => {
+  const files = [...e.target.files];
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  let added = 0;
+  for (const f of files) {
+    try {
+      const fileId = await put('files', { blob: f });
+      await addItem({ type: 'LOCAL', fileId, title: f.name.replace(/\.[^.]+$/, '') });
+      added++;
+    } catch (err) {
+      toast('Could not save "' + f.name + '" (phone storage may be full)');
+    }
+  }
+  e.target.value = '';
+  if (added) toast(added + ' saved in the app');
+};
+
+/* ---------- playback ---------- */
+let yt = null, ytReady = false, ytPending = null, ytLoading = false;
+function loadYT() {
+  if (window.YT && YT.Player) return initYT();
+  if (ytLoading) return; ytLoading = true;
+  const s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  s.onerror = () => { ytLoading = false; };
+  document.head.append(s);
+}
+window.onYouTubeIframeAPIReady = () => initYT();
+function initYT() {
+  if (yt) return;
+  yt = new YT.Player('yt', {
+    width: '100%', height: '100%', playerVars: { playsinline: 1, rel: 0 },
+    events: {
+      onReady: () => { ytReady = true; if (ytPending) { yt.loadVideoById(ytPending); ytPending = null; } },
+      onStateChange: e => {
+        if (e.data === YT.PlayerState.ENDED) next();
+        if (e.data === YT.PlayerState.PLAYING) {
+          const it = items.find(i => i.id === curId);
+          const t = yt.getVideoData && yt.getVideoData().title;
+          if (it && it.autoTitle && t) { it.title = t; it.autoTitle = false; put('items', it).then(renderItems); }
+        }
+      },
+      onError: () => { toast('This YouTube video cannot be played here. Skipping.'); setTimeout(next, 1500); }
+    }
+  });
+}
+function show(which) { vid.hidden = which !== 'vid'; $('#ytwrap').hidden = which !== 'yt'; $('#idle').hidden = !!which; }
+function stopAll() {
+  vid.pause(); vid.removeAttribute('src'); vid.load();
+  if (objUrl) { URL.revokeObjectURL(objUrl); objUrl = null; }
+  if (ytReady) yt.stopVideo();
+  ytPending = null; show(null);
+}
+async function play(i) {
+  const it = items[i]; if (!it) return;
+  curId = it.id; renderItems();
+  if (it.type === 'LOCAL') {
+    if (ytReady) yt.stopVideo();
+    const f = await getOne('files', it.fileId);
+    if (!f) { toast('A saved video is missing'); return i + 1 < items.length ? play(i + 1) : undefined; }
+    if (objUrl) URL.revokeObjectURL(objUrl);
+    objUrl = URL.createObjectURL(f.blob);
+    show('vid'); vid.src = objUrl; vid.play().catch(() => {});
+  } else {
+    vid.pause(); show('yt');
+    if (!yt) loadYT();
+    if (ytReady) yt.loadVideoById(it.ref); else { ytPending = it.ref; if (!navigator.onLine) toast('You are offline'); }
+  }
+  if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: it.title, artist: pl.name });
+}
+const idx = () => items.findIndex(i => i.id === curId);
+function next() { const i = idx(); if (i + 1 < items.length) play(i + 1); else if (repeat && items.length) play(0); }
+function prev() { const i = idx(); if (i > 0) play(i - 1); }
+vid.onended = next;
+$('#next').onclick = next; $('#prev').onclick = prev;
+$('#repeat').onclick = e => { repeat = !repeat; e.target.textContent = 'Repeat: ' + (repeat ? 'on' : 'off'); e.target.classList.toggle('on', repeat); };
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.setActionHandler('nexttrack', next);
+  navigator.mediaSession.setActionHandler('previoustrack', prev);
+}
+
+/* ---------- start ---------- */
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+showHome();
+</script>
+</body>
+</html>
