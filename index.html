@@ -61,11 +61,20 @@
   .acts { display: flex; gap: 2px; margin-top: 4px; flex-wrap: wrap; align-items: center; }
   .acts button, .acts a { padding: 10px 14px; min-height: 44px; display: inline-flex; align-items: center; }
   a.lnk { color: var(--muted); text-decoration: none; font-weight: 600; }
-  dialog { background: var(--card); color: var(--text); border: 0; border-radius: 14px; padding: 16px; width: min(90vw, 420px); }
-  dialog::backdrop { background: rgba(0,0,0,.6); }
-  dialog label, dialog p { display: block; margin: 0 0 10px; }
-  dialog .two { display: flex; gap: 8px; margin-top: 12px; }
-  dialog .two button { flex: 1; }
+  dialog { background: var(--card); color: var(--text); border: none; outline: none; border-radius: 18px;
+    padding: 22px 20px; width: min(88vw, 380px); box-shadow: 0 20px 50px rgba(0,0,0,.45); }
+  dialog::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
+  dialog[open] { animation: pop .16s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
+  dialog h2 { margin: 0 0 14px; font-size: 1.15rem; }
+  dialog label { display: block; margin: 0 0 8px; color: var(--muted); font-size: .9rem; }
+  dialog p { display: block; margin: 0 0 10px; line-height: 1.5; }
+  dialog p:last-of-type { margin-bottom: 4px; }
+  dialog input[type=text] { border: 1px solid #475569; padding: 12px 14px; }
+  dialog input[type=text]:focus { outline: none; border-color: var(--accent); }
+  dialog .two { display: flex; gap: 10px; margin-top: 18px; }
+  dialog .two button { flex: 1; min-height: 46px; padding: 10px 14px; }
+  dialog .two button.icon { background: transparent; border: 1px solid #475569; color: var(--text); }
   #toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 20px); transform: translateX(-50%);
     background: #e2e8f0; color: #0f172a; padding: 10px 16px; border-radius: 999px; font-size: .9rem; max-width: 90%; z-index: 9; }
 </style>
@@ -123,6 +132,7 @@
 </div>
 <dialog id="dlg">
   <form method="dialog">
+    <h2 id="dlgTitle">Rename</h2>
     <label id="dlgLabel" for="dlgInput"></label>
     <input id="dlgInput" type="text" maxlength="120">
     <div class="two">
@@ -132,14 +142,15 @@
   </form>
 </dialog>
 <dialog id="cfmDlg">
+  <h2 id="cfmTitle">Are you sure?</h2>
   <p id="cfmMsg" style="white-space: pre-line"></p>
   <div class="two">
-    <button type="button" id="cfmNo">No, keep it</button>
+    <button type="button" id="cfmNo" class="icon">No, keep it</button>
     <button type="button" id="cfmYes" class="yes">Yes, delete</button>
   </div>
 </dialog>
 <dialog id="castDlg">
-  <p><b>Show this on your TV</b></p>
+  <h2>Show this on your TV</h2>
   <p>1. Put your phone and TV on the same Wi-Fi.</p>
   <p>2. Swipe down from the top of the screen and tap <b>Cast</b>, <b>Smart View</b> or <b>Screen Cast</b> (the name depends on your phone), then pick your TV.</p>
   <p>3. Play your playlist here. Whatever is on your phone screen shows on the TV, so YouTube and phone videos both work, and the playlist keeps moving to the next video. The screen stays awake while a video is playing.</p>
@@ -213,7 +224,7 @@ async function renderHome() {
   }
 }
 async function removeList(p) {
-  if (!await askConfirm('Delete the playlist "' + p.name + '"?\nAll of its videos will be removed from this app.')) return;
+  if (!await askConfirm('Delete the playlist "' + p.name + '"?\nAll of its videos will be removed from this app.', 'Yes, delete', 'No, keep it', true, 'Delete playlist?')) return;
   const its = (await getAll('items')).filter(i => i.playlistId === p.id);
   for (const i of its) { if (i.fileId != null) await del('files', i.fileId); await del('items', i.id); }
   await del('playlists', p.id);
@@ -269,32 +280,33 @@ async function move(i, d) {
   [a.position, b.position] = [b.position, a.position];
   await put('items', a); await put('items', b); await loadItems();
 }
-function askText(label, value) {
+function askText(label, value, title = 'Rename') {
   return new Promise(res => {
     const d = $('#dlg'), inp = $('#dlgInput');
-    $('#dlgLabel').textContent = label; inp.value = value; d.returnValue = '';
+    $('#dlgTitle').textContent = title; $('#dlgLabel').textContent = label; inp.value = value; d.returnValue = '';
     d.onclose = () => res(d.returnValue === 'ok' ? inp.value.trim() : null);
     $('#dlgCancel').onclick = () => d.close('cancel');
     d.showModal(); inp.focus(); inp.select();
   });
 }
 async function renameItem(it) {
-  const t = await askText('Your title for this video', it.title);
+  const t = await askText('Your title for this video', it.title, 'Rename video');
   if (!t) return;
   it.title = t; it.autoTitle = false;
   await put('items', it); renderItems();
   if (it.id === curId) setMeta(it);
 }
 async function renameList(p) {
-  const t = await askText('Playlist name', p.name);
+  const t = await askText('Playlist name', p.name, 'Rename playlist');
   if (!t) return;
   p.name = t; await put('playlists', p); showHome();
 }
-function askConfirm(msg, yes = 'Yes, delete', no = 'No, keep it', danger = true) {
+function askConfirm(msg, yes = 'Yes, delete', no = 'No, keep it', danger = true, title = 'Are you sure?') {
   return new Promise(res => {
     const d = $('#cfmDlg');
+    $('#cfmTitle').textContent = title;
     $('#cfmMsg').textContent = msg; $('#cfmYes').textContent = yes; $('#cfmNo').textContent = no;
-    $('#cfmYes').classList.toggle('yes', danger); d.returnValue = '';
+    $('#cfmYes').classList.toggle('yes', danger); $('#cfmYes').classList.toggle('icon', !danger); d.returnValue = '';
     d.onclose = () => res(d.returnValue === 'yes');
     $('#cfmNo').onclick = () => d.close('no');
     $('#cfmYes').onclick = () => d.close('yes');
@@ -308,7 +320,7 @@ function syncEdit() {
 $('#editToggle').onclick = () => { editing = !editing; syncEdit(); if (pl) renderItems(); else renderHome(); };
 async function removeItem(it) {
   const extra = it.type === 'LOCAL' ? '\nThe saved copy inside this app is deleted. The original video on your phone stays where it is.' : '';
-  if (!await askConfirm('Remove "' + it.title + '" from this playlist?' + extra)) return;
+  if (!await askConfirm('Remove "' + it.title + '" from this playlist?' + extra, 'Yes, remove', 'No, keep it', true, 'Remove video?')) return;
   if (it.id === curId) { stopAll(); curId = null; }
   if (it.fileId != null) await del('files', it.fileId);
   await del('items', it.id); await loadItems();
@@ -555,7 +567,7 @@ $('#restoreInput').onchange = async e => {
   const online = all.filter(okRef).length, local = all.filter(i => i.type === 'LOCAL').length, n = data.playlists.length;
   let msg = 'Add ' + n + ' playlist' + (n === 1 ? '' : 's') + ' with ' + online + ' online video' + (online === 1 ? '' : 's') + ' from this backup?';
   if (local) msg += '\n\n' + local + ' video' + (local === 1 ? '' : 's') + ' that were saved on the old phone cannot be included. Add ' + (local === 1 ? 'it' : 'them') + ' again with "Add from phone".';
-  if (!await askConfirm(msg, 'Yes, add them', 'No, cancel', false)) return;
+  if (!await askConfirm(msg, 'Yes, add them', 'No, cancel', false, 'Restore backup?')) return;
   for (const p of data.playlists) {
     const pid = await put('playlists', { name: String(p.name || 'Playlist').slice(0, 60) });
     let pos = 0;
